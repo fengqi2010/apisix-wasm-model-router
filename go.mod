@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/tetratelabs/proxy-wasm-go-sdk v0.24.0
 	github.com/tidwall/gjson v1.17.1
+	github.com/valyala/fastjson v1.6.4
 )
 
 require (

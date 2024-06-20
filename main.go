@@ -26,19 +26,19 @@ type pluginContext struct {
 }
 
 type pluginConfig struct {
-	contentType string
+	contentType []string
 	path        *regexp.Regexp
 	field       string
 }
 
 func (p *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
-	return &parseBodyToHeader{
+	return &modelRouter{
 		config: p.config,
 	}
 }
 
 func (p *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {
-	proxywasm.LogDebug("loading plugin config")
+	proxywasm.LogInfo("loading plugin config")
 	data, err := proxywasm.GetPluginConfiguration()
 	if data == nil {
 		return types.OnPluginStartStatusOK
@@ -55,56 +55,81 @@ func (p *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlugi
 	}
 
 	result := gjson.ParseBytes(data)
+	array := result.Get("contentType").Array()
+	contentType := make([]string, len(array))
+	for _, v := range array {
+		contentType = append(contentType, v.String())
+	}
 	p.config = pluginConfig{
-		contentType: result.Get("content-type").String(),
+		contentType: contentType,
 		path:        regexp.MustCompile(result.Get("path").String()),
 		field:       result.Get("field").String(),
 	}
-
+	proxywasm.LogInfo("loading plugin config done")
 	return types.OnPluginStartStatusOK
 }
 
-type parseBodyToHeader struct {
+type modelRouter struct {
 	types.DefaultHttpContext
 
-	config          pluginConfig
-	modifyResponse  bool
-	bufferOperation string
+	config pluginConfig
 }
 
-func (ctx *parseBodyToHeader) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {
-	if ctx.modifyResponse {
+func (ctx *modelRouter) OnHttpRequestHeaders(_ int, _ bool) types.Action {
+	// https://apisix.apache.org/zh/docs/apisix/wasm/
+	err := proxywasm.SetProperty([]string{"wasm_process_req_body"}, []byte("true"))
+	if err != nil {
 		return types.ActionContinue
 	}
+	return types.ActionContinue
+}
+
+func (ctx *modelRouter) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {
 	if !endOfStream {
 		// Wait until we see the entire body to replace.
 		return types.ActionPause
 	}
 	// 获取请求的content-type
 	contentType, err := proxywasm.GetHttpRequestHeader("content-type")
-	if err != nil || contentType != ctx.config.contentType {
+	if err != nil {
 		// 不符合content-type
+		proxywasm.LogInfof("error getting content type: %v", err)
+		return types.ActionContinue
+	}
+	found := false
+	for _, s := range ctx.config.contentType {
+		if s == contentType {
+			found = true // 符合content-type
+		}
+	}
+	if !found {
+		proxywasm.LogInfof("content type %s not allowed", contentType)
 		return types.ActionContinue
 	}
 	// 获取请求的path
 	path, err := proxywasm.GetHttpRequestHeader(":path")
 	if err != nil || !ctx.config.path.MatchString(path) {
 		// 不符合匹配规则
+		proxywasm.LogInfof("path %s not allowed", path)
 		return types.ActionContinue
 	}
 	originalBody, err := proxywasm.GetHttpRequestBody(0, bodySize)
 	if err != nil {
-		proxywasm.LogErrorf("failed to get request body: %v", err)
+		proxywasm.LogInfof("error getting original body: %v", err)
 		return types.ActionContinue
 	}
 	model := gjson.Get(string(originalBody), ctx.config.field)
 	if !model.Exists() {
+		proxywasm.LogInfof("field %s not found", ctx.config.field)
 		return types.ActionContinue
 	}
-	err = proxywasm.AddHttpRequestHeader(":proxy-model", model.String())
+	headerName := "x-" + ctx.config.field + "-router"
+	headerValue := model.String()
+	err = proxywasm.AddHttpRequestHeader(headerName, headerValue)
 	if err != nil {
-		proxywasm.LogErrorf("failed to %s request body: %v", ctx.bufferOperation, err)
+		proxywasm.LogInfof("failed to %s request header: %v", headerValue, err)
 		return types.ActionContinue
 	}
+	proxywasm.LogDebugf("request header added [{%s: %s}]", headerName, headerValue)
 	return types.ActionContinue
 }
