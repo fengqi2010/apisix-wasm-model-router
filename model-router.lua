@@ -57,8 +57,11 @@ function _M.access(conf, ctx)
     local field = decoded_body[conf.field]
     if field then
         core.request.set_header(ctx, "x-" .. conf.field .. "-router", field)
-        core.request.set_header(ctx, "x-" .. conf.field .. "-router-plugin", "lua")
     end
+end
+
+function _M.header_filter(conf, ctx)
+    ngx.header["x-" .. conf.field .. "-router-by"] = "lua"
 end
 
 return _M

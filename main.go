@@ -118,18 +118,29 @@ func (ctx *modelRouter) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 		proxywasm.LogInfof("error getting original body: %v", err)
 		return types.ActionContinue
 	}
-	model := gjson.Get(string(originalBody), ctx.config.field)
-	if !model.Exists() {
+	field := gjson.Get(string(originalBody), ctx.config.field)
+	if !field.Exists() {
 		proxywasm.LogInfof("field %s not found", ctx.config.field)
 		return types.ActionContinue
 	}
 	headerName := "x-" + ctx.config.field + "-router"
-	headerValue := model.String()
+	headerValue := field.String()
 	err = proxywasm.AddHttpRequestHeader(headerName, headerValue)
 	if err != nil {
 		proxywasm.LogInfof("failed to %s request header: %v", headerValue, err)
 		return types.ActionContinue
 	}
 	proxywasm.LogDebugf("request header added [{%s: %s}]", headerName, headerValue)
+	return types.ActionContinue
+}
+
+func (ctx *modelRouter) OnHttpResponseHeaders(_ int, endOfStream bool) types.Action {
+	if !endOfStream {
+		return types.ActionPause
+	}
+	err := proxywasm.AddHttpResponseHeader("x-"+ctx.config.field+"-router-by", "wasm")
+	if err != nil {
+		return types.ActionContinue
+	}
 	return types.ActionContinue
 }
